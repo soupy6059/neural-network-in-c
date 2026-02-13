@@ -44,6 +44,15 @@ double randf() {
     return ((double)num) / ((double)steps);
 }
 
+double randf_normal() {
+    size_t N = 30;
+    double acc = 0.0;
+    for(size_t k = 0; k < N; ++k) {
+        acc += randf();
+    }
+    return acc / (double)N;
+}
+
 void Matrix_rand(Matrix *this) {
     for(size_t i = 0; i < this->shape[0] * this->shape[1]; ++i) {
         this->val[i] = randf();
@@ -552,6 +561,124 @@ void Connection_dtor(Connection synapse) {
     free(synapse.weights);
     Matrix_dtor(*synapse.bias);
     free(synapse.bias);
+}
+
+typedef struct Dataset_ {
+    size_t(*len)(struct Dataset_ *,void*);
+    double*(*get_item)(struct Dataset_*,void*);
+} Dataset;
+
+typedef struct DiscreteMapping_ {
+    Dataset dataset;
+} DiscreteMapping;
+
+typedef struct MatrixArray_ {
+    Matrix **matricies;
+    size_t len;
+} MatrixArray;
+
+typedef struct Composite_ {
+    DiscreteMapping discrete_mapping;
+    size_t n;
+    size_t n_classes;
+    char onehot;
+    size_t input_dim;
+    MatrixArray *X;
+ // size_t X_len = n;
+    size_t *T;
+ // size_t T_len = n;
+} Composite;
+
+typedef struct Capture_ {
+    MatrixArray(*lambda)(void*);
+    void *captured;
+} Capture;
+
+Composite Composite_ctor(Capture *fcns, size_t fcns_len, size_t n, double noise, char onehot) {
+    Composite set;
+    set.discrete_mapping = DiscreteMapping_ctor();
+    set.base.len = NULL;
+    set.base.get_item = NULL;
+    set.n = n;
+    MatrixArray x = (*fcns[0].lambda)(fncs[0].captured);
+    set.n_classes = fcns_len;
+    set.onehot = onehot;
+    set.input_dim = x.len;
+    size_t *indexes = malloc(set.n * sizeof(size_t));
+    for(size_t i = 0; i < set.n; ++i) {
+        indexes[i] = rand() % set.n_classes;
+    }
+
+    set.X = malloc(set.n * sizeof(MatrixArray));
+    for(size_t i = 0; i < set.n; ++i) {
+        set.X[i] = (*fcns[indexes[i]].lambda)(fncs[indexes[i]].captured);
+    }
+
+    set.T = indexes;
+
+    return set;
+}
+
+void Composite_dtor(Composite set) {
+    for(size_t k = 0; k < set.n; ++k) {
+        Matrix **mats = set.X[k].matricies;
+        size_t len = set.X[k].len;
+        for(size_t i = 0; i < len; ++i) {
+            Matrix_dtor(*mats[i]);
+        }
+        free(mats);
+    }
+    free(set.X);
+
+    free(set.T);
+    DiscreteMapping_dtor(set.discrete_mapping);
+}
+
+typedef struct UClasses_ {
+    Composite composite;
+    char binary;
+    double h;
+    double w;
+    double theta;
+    double offset[2];
+} UClasses;
+
+void *u_shape(UClasses *this, double noise) {
+    double arclength = 2.0 * this->h + PI * this->w / 2.0;
+    double r = randf() * arclength;
+    Matrix *p = NULL;
+    p = malloc(sizeof(Matrix));
+    Matrix_ctor(p, &(double[2]){1,2});
+    if(r < this->h) {
+        *Matrix_at(p, 0, 0) = -this->w/2.0 + randf_normal() * noise;
+        *Matrix_at(p, 0, 1) = this->h - r + randf_normal() * noise;
+    }
+    else if(r < this->h + PI * this->w / 2.0) {
+        double phi = (r - this->h) / (this->w / 2.0) + PI;
+        *Matrix_at(p, 0, 0) = this->w / 2.0 * cos(phi) + randf_normal() * noise;
+        *Matrix_at(p, 0, 1) = this->w / 2.0 * sin(phi) + randf_normal() * noise;
+    }
+    else {
+        *Matrix_at(p, 0, 0) = this->w / 2.0 + randf_normal() * noise;
+        *Matrix_at(p, 0, 1) = this->h - (arclength - r) + randf_normal() * noise;
+    }
+    return p;
+}
+
+UClasses UClasses_ctor(size_t n, char binary) {
+    UClasses set;
+    set.composite = Composite_ctor();
+    set.binary = binary;
+    set.h = 1.0;
+    set.w = 1.0;
+    set.theta = randf() * 2.0 * PI;
+    set.offset[0] = randf()*4.0 - 2.0;
+    set.offset[1] = randf()*4.0 - 2.0;
+
+    Matrix *M = malloc(sizeof(Matrix));
+    Matrix_ctor(M, &(double[2]){2, 2});
+    *Matrix_at(M, 0, 0) = cos(set.theta); *Matrix_at(M, 0, 1) = -sin(set.theta);
+    *Matrix_at(M, 1, 0) = sin(set.theta); *Matrix_at(M, 1, 1) = cos(set.theta);
 }
 
 typedef struct Network_ {
