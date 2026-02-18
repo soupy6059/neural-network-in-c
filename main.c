@@ -572,6 +572,8 @@ typedef struct DiscreteMapping_ {
     Dataset dataset;
 } DiscreteMapping;
 
+DiscreteMapping DiscreteMapping_ctor() {}
+
 typedef struct MatrixArray_ {
     Matrix **matricies;
     size_t len;
