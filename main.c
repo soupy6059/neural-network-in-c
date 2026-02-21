@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <math.h>
+#include <time.h>
 
 #define NOTE(X)
 #define ROWS 0
@@ -19,13 +20,24 @@ void Matrix_ctor(Matrix *m, size_t *shape) {
     m->creator = NULL;
     m->shape[0] = shape[0];
     m->shape[1] = shape[1];
-    m->val = malloc(shape[0] * shape[1] * sizeof(*m->val));
-    m->grad = malloc(shape[0] * shape[1] * sizeof(*m->grad));
+    m->val = calloc(shape[0] * shape[1], sizeof(*m->val));
+    m->grad = calloc(shape[0] * shape[1], sizeof(*m->grad));
 }
 
 void Matrix_dtor(Matrix m) {
     free(m.val);
     free(m.grad);
+}
+
+double *Matrix_at(Matrix*,size_t,size_t);
+void Matrix_cout(Matrix A) {
+    for(size_t row = 0; row < A.shape[ROWS]; ++row) {
+        printf("[");
+        for(size_t col = 0; col < A.shape[COLS]; ++col) {
+            printf(" %f", *Matrix_at(&A, row, col));
+        }
+        printf(" ]\n");
+    }
 }
 
 void Matrix_set_copy(Matrix *this, double *val) {
@@ -36,6 +48,13 @@ void Matrix_set_copy(Matrix *this, double *val) {
 void Matrix_set_move(Matrix *this, double *val) {
     free(this->val);
     this->val = val;
+}
+
+size_t randi(size_t low, size_t high) {
+    assert(high >= low);
+    size_t dist = high - low;
+    size_t R = rand() % dist;
+    return R + low;
 }
 
 double randf() {
@@ -140,13 +159,19 @@ Matrix *Matrix_transpose(Matrix *A) {
     return T;
 }
 
-Matrix *Matrix_ones(Matrix *this) {
+Matrix *Matrix_ones_like(Matrix *this) {
     Matrix *ones = malloc(sizeof(*this));
     Matrix_ctor(ones, this->shape);
     for(size_t i = 0; i < ones->shape[0] * ones->shape[1]; ++i) {
         ones->val[i] = 1.0;
     }
     return ones;
+}
+
+void Matrix_to_ones(Matrix *this) {
+    for(size_t i = 0; i < this->shape[0] * this->shape[1]; ++i) {
+        this->val[i] = 1.0;
+    }
 }
 
 Matrix *Matrix_zeroes(Matrix *this) {
@@ -165,21 +190,34 @@ void Matrix_mul_scalar_inplace(Matrix *matrix, double scalar) {
 }
 
 typedef struct MatrixOperation_ {
+    void*(*call)(void*);
     void **args;
     size_t args_len;
-    void*(*call)(void*);
     void*(*backward)(void*);
 } MatrixOperation;
 
+
+struct Connection_;
+typedef struct RawFunc_ {
+    void*(*call)(void*);
+} RawFunc;
+typedef struct Layer_ {
+    union {
+        MatrixOperation *op;
+        struct Connection_ *synapse;
+        RawFunc *raw;
+    } as;
+} Layer;
+
 typedef struct {
-    MatrixOperation *this;
+    Layer this;
 } MatrixOperation_arg0;
 typedef struct {
-    MatrixOperation *this;
+    Layer this;
     Matrix *arg1;
 } MatrixOperation_arg1;
 typedef struct {
-    MatrixOperation *this;
+    Layer this;
     Matrix *arg1;
     Matrix *arg2;
 } MatrixOperation_arg2;
@@ -208,7 +246,7 @@ void Plus_dtor(Plus adder) {
 
 void *Plus_call(void *args_) {
     MatrixOperation_arg2 *args = args_;
-    Plus *this = (Plus*)args->this;
+    Plus *this = (Plus*)args->this.as.op;
     Matrix *A = args->arg1;
     Matrix *B = args->arg1;
 
@@ -236,7 +274,7 @@ void *Plus_backward(void *args_) {
     Plus *this = args->this;
     void *s = args->s;
 
-    Matrix *ones = Matrix_ones((Matrix*)s);
+    Matrix *ones = Matrix_ones_like((Matrix*)s);
     Matrix *mat_of_s = Matrix_mul((double*)s, ones);
     Matrix_backward(((Matrix**)this->base.args)[0],  mat_of_s);
     Matrix_backward(((Matrix**)this->base.args)[1],  mat_of_s);
@@ -267,7 +305,7 @@ void Minus_dtor(Minus adder) {
 
 void *Minus_call(void *args_) {
     MatrixOperation_arg2 *args = args_;
-    Minus *this = (Minus*)args->this;
+    Minus *this = (Minus*)args->this.as.op;
     Matrix *A = args->arg1;
     Matrix *B = args->arg1;
 
@@ -295,7 +333,7 @@ void *Minus_backward(void *args_) {
     Minus *this = args->this;
     void *s = args->s;
 
-    Matrix *ones = Matrix_ones((Matrix*)s);
+    Matrix *ones = Matrix_ones_like((Matrix*)s);
     Matrix_backward(((Matrix**)this->base.args)[0],  Matrix_mul((double*)s, ones));
     Matrix_mul_scalar_inplace(ones, -1.0);
     Matrix_backward(((Matrix**)this->base.args)[1],  Matrix_mul((double*)s, ones));
@@ -326,7 +364,7 @@ double logistic_derivitive(double x) {
 
 void *Logistic_call(void *args_) {
     MatrixOperation_arg1 *args = args_;
-    Logistic *this = (Logistic*)args->this;
+    Logistic *this = (Logistic*)args->this.as.op;
     Matrix *x = args->arg1;
 
     this->base.args_len = 1;
@@ -377,7 +415,7 @@ typedef struct Mul_ {
 
 void *Mul_call(void *args_) {
     MatrixOperation_arg2 *args = args_;
-    Mul *this = (Mul*)args->this;
+    Mul *this = (Mul*)args->this.as.op;
     Matrix *A = args->arg1;
     Matrix *B = args->arg2;
 
@@ -446,7 +484,7 @@ Matrix *log_loss(Matrix *Y, Matrix *target) {
 
 void *BinaryCE_call(void *args_) {
     MatrixOperation_arg2 *args = args_;
-    BinaryCE *this = (BinaryCE*)args->this;
+    BinaryCE *this = (BinaryCE*)args->this.as.op;
     Matrix *Y = args->arg1;
     Matrix *target = args->arg1;
 
@@ -495,12 +533,12 @@ BinaryCE BinaryCE_ctor() {
 }
 
 typedef struct Connection_ {
+    void *(*call)(void*);
     size_t in_size;
     size_t out_size;
     Matrix *weights;
     Matrix *bias;
     Matrix *params[2];
-    void *(*call)(void*);
 } Connection;
 struct Connection_call_args_t {
     Connection *this;
@@ -518,16 +556,20 @@ void *Connection_call(void *args_) {
     Plus *adder = malloc(sizeof(Plus));
     *adder = Plus_ctor();
 
-    Matrix *h = (*muller->base.call)((void*)&(MatrixOperation_arg2){ (MatrixOperation*)muller, x, this->weights });
+    Matrix *h = (*muller->base.call)((void*)&(MatrixOperation_arg2){
+        (MatrixOperation*)muller, x, this->weights
+    });
     h->creator = muller;
 
     Matrix *ones = malloc(sizeof(Matrix));
     size_t ones_shape[2] = {h->shape[0], 1};
     Matrix_ctor(ones, ones_shape);
-    Matrix_ones(ones);
+    Matrix_to_ones(ones);
     Matrix *big_bias = Matrix_product(ones, this->weights);
     
-    Matrix *v = (*adder->base.call)((void*)&(MatrixOperation_arg2){ (MatrixOperation*)adder, h, big_bias });
+    Matrix *v = (*adder->base.call)((void*)&(MatrixOperation_arg2){
+        (MatrixOperation*)adder, h, big_bias
+    });
     v->creator = (void*)adder;
     
     Matrix_dtor(*ones);
@@ -564,129 +606,26 @@ void Connection_dtor(Connection synapse) {
 }
 
 typedef struct Dataset_ {
-    size_t(*len)(struct Dataset_ *,void*);
-    double*(*get_item)(struct Dataset_*,void*);
+    Matrix *targets;
+    size_t n;
 } Dataset;
 
-typedef struct DiscreteMapping_ {
-    Dataset dataset;
-} DiscreteMapping;
+Matrix *Dataset_inputs(Dataset *const this) {
+    return NULL;
+}
 
-DiscreteMapping DiscreteMapping_ctor() {}
+Matrix *Dataset_targets(Dataset *const this) {
+    return NULL;
+}
 
-typedef struct MatrixArray_ {
-    Matrix **matricies;
-    size_t len;
-} MatrixArray;
-
-typedef struct Composite_ {
-    DiscreteMapping discrete_mapping;
-    size_t n;
-    size_t n_classes;
-    char onehot;
-    size_t input_dim;
-    MatrixArray *X;
- // size_t X_len = n;
-    size_t *T;
- // size_t T_len = n;
-} Composite;
-
-typedef struct Capture_ {
-    MatrixArray(*lambda)(void*);
-    void *captured;
-} Capture;
-
-Composite Composite_ctor(Capture *fcns, size_t fcns_len, size_t n, double noise, char onehot) {
-    Composite set;
-    set.discrete_mapping = DiscreteMapping_ctor();
-    set.base.len = NULL;
-    set.base.get_item = NULL;
-    set.n = n;
-    MatrixArray x = (*fcns[0].lambda)(fncs[0].captured);
-    set.n_classes = fcns_len;
-    set.onehot = onehot;
-    set.input_dim = x.len;
-    size_t *indexes = malloc(set.n * sizeof(size_t));
-    for(size_t i = 0; i < set.n; ++i) {
-        indexes[i] = rand() % set.n_classes;
-    }
-
-    set.X = malloc(set.n * sizeof(MatrixArray));
-    for(size_t i = 0; i < set.n; ++i) {
-        set.X[i] = (*fcns[indexes[i]].lambda)(fncs[indexes[i]].captured);
-    }
-
-    set.T = indexes;
-
+Dataset Dataset_ctor() {
+    Dataset set;
     return set;
 }
-
-void Composite_dtor(Composite set) {
-    for(size_t k = 0; k < set.n; ++k) {
-        Matrix **mats = set.X[k].matricies;
-        size_t len = set.X[k].len;
-        for(size_t i = 0; i < len; ++i) {
-            Matrix_dtor(*mats[i]);
-        }
-        free(mats);
-    }
-    free(set.X);
-
-    free(set.T);
-    DiscreteMapping_dtor(set.discrete_mapping);
-}
-
-typedef struct UClasses_ {
-    Composite composite;
-    char binary;
-    double h;
-    double w;
-    double theta;
-    double offset[2];
-} UClasses;
-
-void *u_shape(UClasses *this, double noise) {
-    double arclength = 2.0 * this->h + PI * this->w / 2.0;
-    double r = randf() * arclength;
-    Matrix *p = NULL;
-    p = malloc(sizeof(Matrix));
-    Matrix_ctor(p, &(double[2]){1,2});
-    if(r < this->h) {
-        *Matrix_at(p, 0, 0) = -this->w/2.0 + randf_normal() * noise;
-        *Matrix_at(p, 0, 1) = this->h - r + randf_normal() * noise;
-    }
-    else if(r < this->h + PI * this->w / 2.0) {
-        double phi = (r - this->h) / (this->w / 2.0) + PI;
-        *Matrix_at(p, 0, 0) = this->w / 2.0 * cos(phi) + randf_normal() * noise;
-        *Matrix_at(p, 0, 1) = this->w / 2.0 * sin(phi) + randf_normal() * noise;
-    }
-    else {
-        *Matrix_at(p, 0, 0) = this->w / 2.0 + randf_normal() * noise;
-        *Matrix_at(p, 0, 1) = this->h - (arclength - r) + randf_normal() * noise;
-    }
-    return p;
-}
-
-UClasses UClasses_ctor(size_t n, char binary) {
-    UClasses set;
-    set.composite = Composite_ctor();
-    set.binary = binary;
-    set.h = 1.0;
-    set.w = 1.0;
-    set.theta = randf() * 2.0 * PI;
-    set.offset[0] = randf()*4.0 - 2.0;
-    set.offset[1] = randf()*4.0 - 2.0;
-
-    Matrix *M = malloc(sizeof(Matrix));
-    Matrix_ctor(M, &(double[2]){2, 2});
-    *Matrix_at(M, 0, 0) = cos(set.theta); *Matrix_at(M, 0, 1) = -sin(set.theta);
-    *Matrix_at(M, 1, 0) = sin(set.theta); *Matrix_at(M, 1, 1) = cos(set.theta);
-}
-
 typedef struct Network_ {
     size_t layers_capacity;
     size_t layers_len;
-    MatrixOperation **layers;
+    Layer *layers;
     MatrixOperation *loss;
     size_t loss_history_capacity;
     size_t loss_history_len;
@@ -696,8 +635,8 @@ typedef struct Network_ {
 
 // eats x
 Matrix *Network_call(Network *this, Matrix *x) {
-    for(MatrixOperation **layer = this->layers; layer != this->layers + this->layers_len; ++layer) {
-        Matrix *new_x = (Matrix*)(*(*layer)->call)((void*)&(MatrixOperation_arg1){
+    for(Layer *layer = this->layers; layer != this->layers + this->layers_len; ++layer) {
+        Matrix *new_x = (Matrix*)(*layer->as.raw->call)((void*)&(MatrixOperation_arg1){
             .this = *layer,
             .arg1 = x
         });
@@ -722,7 +661,7 @@ Network Network_ctor() {
     return net;
 }
 
-void Network_append_layer(Network *this, MatrixOperation *layer) {
+void Network_append_layer(Network *this, Layer layer) {
     if(this->layers_len == this->layers_capacity) {
         this->layers_capacity *= 2;
         this->layers = realloc(this->layers, this->layers_capacity * sizeof(*this->layers));
@@ -740,70 +679,108 @@ void Network_append_loss_history(Network *this, double loss) {
 
 void Network_learn(Network *this, Dataset *data, double learning_rate, size_t epochs) {
     Matrix *x = Dataset_inputs(data);
-    Matrix *t = Dataset_targets(data);
+    Matrix *target = Dataset_targets(data);
     for(size_t epoch = 0; epoch < epochs; ++epoch) {
         Matrix *y = (*this->call)(this, x);
-        Matrix *loss = (*this->loss->call)((void*)&(MatrixOperation_arg2){ this, y, t });
+        Matrix *loss = (*this->loss->call)((void*)&(MatrixOperation_arg2){ this->loss, y, target });
         MatrixOperation_zero_grad(this->loss);
-        (*this->loss->backward)();
-        for(Matrix **p = this->params; p != this->params + 2; ++p) {
-            for(size_t i = 0; i < (*p)->shape[0] * (*p)->shape[1]; ++i) {
-                (*p)->val[i] -= learning_rate * (*p)->grad[i];
-            }
+
+        {
+            Matrix one;
+            size_t singleton[2] = {1,1};
+            Matrix_ctor(&one, singleton);
+            one.val[0] = 1.0;
+            (*this->loss->backward)(&one);
         }
+
+        // for(Matrix **param = this->params; param != this->params + 2; ++p) {
+        //     for(size_t i = 0; i < (*param)->shape[0] * (*param)->shape[1]; ++i) {
+        //         (*param)->val[i] -= learning_rate * (*param)->grad[i];
+        //     }
+        // }
         if(epoch % 50 == 0) {
-            printf("%zu: cost = %ld", epoch, *Matrix_at(loss, 0, 0));
+            printf("%zu: cost = %f", epoch, *Matrix_at(loss, 0, 0));
         }
     }
 }
 
-int main() {
+int main(void) {
+    srand(time(NULL));
+    Matrix A;
+    size_t shape[2] = {3,3};
+    Matrix_ctor(&A, shape);
+    *Matrix_at(&A, randi(0,3), randi(0,3)) = randf_normal();
+    *Matrix_at(&A, randi(0,3), randi(0,3)) = randf_normal();
+    *Matrix_at(&A, randi(0,3), randi(0,3)) = randf_normal();
+    Matrix_apply(&A, &A, exp);
+
+    Matrix B;
+    Matrix_ctor(&B, shape);
+    Matrix_to_ones(&B);
+
+    printf("A == \n"); Matrix_cout(A);
+    printf("b == \n"); Matrix_cout(B);
+
+    Matrix *C = Matrix_product(&A,&B);
+    printf("C == \n"); Matrix_cout(*C);
+
+    Matrix_dtor(A);
+    Matrix_dtor(B);
+
+    Matrix_dtor(*C);
+    free(C);
+
+    return 0;
+
     srand(time(NULL));
     Dataset *my_dataset = malloc(sizeof(Dataset));
-    Dataset_ctor(my_dataset);
-    Dataset_U_classes(my_dataset);
-    Dataset_plot(my_dataset, NULL);
+    *my_dataset = Dataset_ctor();
+    //Dataset_plot(my_dataset, NULL);
+
+    return 0;
 
     Network *net = malloc(sizeof(Network));
     *net = Network_ctor();
     
     {
-        Connection *synapse = malloc(sizeof(Connection));
-        *synapse = Connection_ctor(2, 50);
-        Network_append_layer(net, synapse);
+        Layer layer;
 
-        Logistic *logistic = malloc(sizeof(Logistic));
-        *logistic = Logistic_ctor();
-        Network_append_layer(logistic);
+        layer.as.synapse = malloc(sizeof(Connection));
+        *layer.as.synapse = Connection_ctor(2, 50);
+        Network_append_layer(net, layer);
 
-        synapse = malloc(sizeof(Connection));
-        *synapse = Connection_ctor(50, 50);
-        Network_append_layer(net, synapse);
+        layer.as.op = malloc(sizeof(Logistic));
+        *(Logistic*)layer.as.op = Logistic_ctor();
+        Network_append_layer(net, layer);
 
-        logistic = malloc(sizeof(Logistic));
-        *logistic = Logistic_ctor();
-        Network_append_layer(logistic);
+        layer.as.synapse = malloc(sizeof(Connection));
+        *layer.as.synapse = Connection_ctor(50, 50);
+        Network_append_layer(net, layer);
 
-        synapse = malloc(sizeof(Connection));
-        *synapse = Connection_ctor(50, 1);
-        Network_append_layer(net, synapse);
+        layer.as.op = malloc(sizeof(Logistic));
+        *(Logistic*)layer.as.op = Logistic_ctor();
+        Network_append_layer(net, layer);
 
-        logistic = malloc(sizeof(Logistic));
-        *logistic = Logistic_ctor();
-        Network_append_layer(logistic);
+        layer.as.synapse = malloc(sizeof(Connection));
+        *layer.as.synapse = Connection_ctor(50, 1);
+        Network_append_layer(net, layer);
+
+        layer.as.op = malloc(sizeof(Logistic));
+        *(Logistic*)layer.as.op = Logistic_ctor();
+        Network_append_layer(net, layer);
     }
     BinaryCE *loss = malloc(sizeof(BinaryCE));
     *loss = BinaryCE_ctor();
-    net->loss = loss;
+    net->loss = (MatrixOperation*)loss;
 
-    Matrix *x = Dataset_inputs(my_dataset);
-
+    // learn
     Network_learn(net, my_dataset, 1, 7000);
-    plot_vector(net->loss_history, net->loss_history_len, "Epoch", "Loss"); 
-    
+    //plot_vector(net->loss_history, net->loss_history_len, "Epoch", "Loss"); 
+
+    // test
     Matrix *inputs = Dataset_inputs(my_dataset);
     Matrix *y = (*net->call)(net, inputs);
-    Dataset_plot(my_dataset, y);
+    //Dataset_plot(my_dataset, y);
 
     Matrix_dtor(*inputs);
     Matrix_dtor(*y);
