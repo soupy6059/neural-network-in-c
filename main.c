@@ -201,7 +201,13 @@ struct Connection_;
 typedef struct RawFunc_ {
     void*(*call)(void*);
 } RawFunc;
+typedef enum LayerKind_ {
+    NIL = 0,
+    OP = (1 << 1),
+    SYNAPSE = (1 << 2)
+} LayerKind;
 typedef struct Layer_ {
+    LayerKind kind;
     union {
         MatrixOperation *op;
         struct Connection_ *synapse;
