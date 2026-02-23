@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <math.h>
 #include <time.h>
+#include <string.h>
 
 #define NOTE(X)
 #define ROWS 0
@@ -78,6 +79,14 @@ void Matrix_rand(Matrix *this) {
     }
 }
 
+void Matrix_identity_inplace(Matrix *this) {
+    size_t N = this->shape[0] < this->shape[1]? this->shape[0] : this->shape[1];
+    memset(this->val, 0, sizeof(double) * this->shape[0] * this->shape[1]);
+    for(size_t k = 0; k < N; ++k) {
+        *Matrix_at(this, k, k) = 1.0;
+    }
+}
+
 
 struct MatrixOperation_;
 void MatrixOperation_zero_grad(struct MatrixOperation_ *this);
@@ -105,7 +114,7 @@ double *Matrix_call(Matrix *this) {
     return this->val;
 }
 
-void Matrix_apply(Matrix *dest, Matrix *src, double(*fn)(double)) {
+void Matrix_apply_inplace(Matrix *dest, Matrix *src, double(*fn)(double)) {
     assert(dest->shape[0] == src->shape[0]
     && dest->shape[1] == src->shape[1] && "bad src|dest shape");
     for(size_t i = 0; i < dest->shape[0] * dest->shape[1]; ++i) {
@@ -146,6 +155,20 @@ Matrix *Matrix_product(Matrix *A, Matrix *B) {
     return res;
 }
 
+void Matrix_product_inplace(Matrix *dest, Matrix *src1, Matrix *src2) {
+    for(size_t row = 0; row < dest->shape[ROWS]; ++row) {
+        for(size_t col = 0; col < dest->shape[COLS]; ++col) {
+            double acc = 0.0;
+
+            for(size_t k = 0; k < src1->shape[COLS]; ++k) {
+                acc += *Matrix_at(src1, row, k) * *Matrix_at(src2, k, col);
+            }
+            
+            *Matrix_at(dest, row, col) = acc;
+        }
+    }
+}
+
 Matrix *Matrix_transpose(Matrix *A) {
     Matrix *T = malloc(sizeof(Matrix));
     size_t T_shape[2] = {A->shape[COLS], A->shape[ROWS]};
@@ -168,7 +191,7 @@ Matrix *Matrix_ones_like(Matrix *this) {
     return ones;
 }
 
-void Matrix_to_ones(Matrix *this) {
+void Matrix_ones_inplace(Matrix *this) {
     for(size_t i = 0; i < this->shape[0] * this->shape[1]; ++i) {
         this->val[i] = 1.0;
     }
@@ -181,6 +204,12 @@ Matrix *Matrix_zeroes(Matrix *this) {
         zeroes->val[i] = 0.0;
     }
     return zeroes;
+}
+
+void Matrix_zeroes_inplace(Matrix *this) {
+    for(size_t i = 0; i < this->shape[0] * this->shape[1]; ++i) {
+        this->val[i] = 0.0;
+    }
 }
 
 void Matrix_mul_scalar_inplace(Matrix *matrix, double scalar) {
@@ -378,7 +407,7 @@ void *Logistic_call(void *args_) {
     ((Matrix**)this->base.args)[0] = x;
     Matrix *v = malloc(sizeof(Matrix));
     Matrix_ctor(v, x->shape);
-    Matrix_apply(v, ((Matrix**)this->base.args)[0], logistic);
+    Matrix_apply_inplace(v, ((Matrix**)this->base.args)[0], logistic);
     v->creator = this;
     return v;
 }
@@ -394,7 +423,7 @@ void *Logistic_backward(void *args_) {
 
     Matrix *der = malloc(sizeof(Matrix));
     Matrix_ctor(der, s->shape);
-    Matrix_apply(der, ((Matrix**)this->base.args)[0], logistic_derivitive);
+    Matrix_apply_inplace(der, ((Matrix**)this->base.args)[0], logistic_derivitive);
 
     Matrix *res = Matrix_product(s, der);
     Matrix_backward(((Matrix**)this->base.args)[0], res); 
@@ -567,20 +596,17 @@ void *Connection_call(void *args_) {
     });
     h->creator = muller;
 
-    Matrix *ones = malloc(sizeof(Matrix));
+    Matrix ones; // here I am saying "ones" is temporary, not referenced after the end of the function call.
     size_t ones_shape[2] = {h->shape[0], 1};
-    Matrix_ctor(ones, ones_shape);
-    Matrix_to_ones(ones);
-    Matrix *big_bias = Matrix_product(ones, this->weights);
+    Matrix_ctor(&ones, ones_shape);
+    Matrix_ones_inplace(&ones);
+    Matrix *big_bias = Matrix_product(&ones, this->weights);
     
     Matrix *v = (*adder->base.call)((void*)&(MatrixOperation_arg2){
         (MatrixOperation*)adder, h, big_bias
     });
     v->creator = (void*)adder;
     
-    Matrix_dtor(*ones);
-    free(ones);
-
     return v;
 }
 
@@ -713,28 +739,29 @@ void Network_learn(Network *this, Dataset *data, double learning_rate, size_t ep
 int main(void) {
     srand(time(NULL));
     Matrix A;
-    size_t shape[2] = {3,3};
-    Matrix_ctor(&A, shape);
-    *Matrix_at(&A, randi(0,3), randi(0,3)) = randf_normal();
-    *Matrix_at(&A, randi(0,3), randi(0,3)) = randf_normal();
-    *Matrix_at(&A, randi(0,3), randi(0,3)) = randf_normal();
-    Matrix_apply(&A, &A, exp);
+    Matrix_ctor(&A, (size_t[2]){5,5});
+    for(size_t i = 0; i < 20; ++i) {
+        *Matrix_at(&A, randi(0,5), randi(0,5)) += randf_normal();
+    }
+    Matrix_apply_inplace(&A, &A, exp);
 
     Matrix B;
-    Matrix_ctor(&B, shape);
-    Matrix_to_ones(&B);
+    Matrix_ctor(&B, (size_t[2]){5,5});
+    for(size_t i = 0; i < 20; ++i) {
+        *Matrix_at(&B, randi(0,5), randi(0,5)) += randf_normal();
+    }
+
+    Matrix C;
+    Matrix_ctor(&C, (size_t[2]){5,5});
+    Matrix_product_inplace(&C, &A, &B);
 
     printf("A == \n"); Matrix_cout(A);
     printf("b == \n"); Matrix_cout(B);
-
-    Matrix *C = Matrix_product(&A,&B);
-    printf("C == \n"); Matrix_cout(*C);
+    printf("C == \n"); Matrix_cout(C);
 
     Matrix_dtor(A);
     Matrix_dtor(B);
-
-    Matrix_dtor(*C);
-    free(C);
+    Matrix_dtor(C);
 
     return 0;
 
@@ -795,3 +822,21 @@ int main(void) {
 
     return 0;
 }
+
+/*
+using random;
+using heap;
+matrix:
+
+P = malloc.matrix |> matrix.identity <| copy;
+Arr = array.iota | at 10 |> [double.product | self] <| lazy;
+A = matrix.identity|$;
+C = A |#| normal |$;
+A | normal |;
+My_Matrix = matrix.angle 2 3./4.*pi|$;
+P |> normal <|;
+P |> ( Mat --> Mat | normal) <|;
+P |> [matrix.product | self] <| free;
+P = malloc.matrix | copy
+P |> Mat --> Mat = My_Matrix|# <|;
+ */
